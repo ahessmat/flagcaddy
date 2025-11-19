@@ -1,0 +1,11 @@
+{
+  "engagement": {
+    "last_summary": "",
+    "name": "Demo",
+    "objective": "Initial foothold and privilege escalation",
+    "scope": "10.10.0.0/16"
+  },
+  "hosts": {},
+  "log_offset": 0,
+  "timeline": []
+}

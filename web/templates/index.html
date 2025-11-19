@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>CTF Coaching Dashboard</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.1/normalize.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  <body>
+    <main class="container">
+      <header>
+        <h1>CTF / Pentest Coaching</h1>
+        <p class="timestamp">Last update: {{ generated or 'waiting for data' }}</p>
+      </header>
+
+      <section id="next-steps">
+        <h2>Prioritized Next Steps</h2>
+        <div id="steps-list">
+          {% if items %}
+            {% for item in items %}
+              <article class="card priority-{{ item.priority }}">
+                <div class="card-header">
+                  <span class="priority">P{{ item.priority }}</span>
+                  <h3>{{ item.title }}</h3>
+                </div>
+                <p>{{ item.details }}</p>
+                {% if item.command %}
+                  <pre><code>{{ item.command }}</code></pre>
+                {% endif %}
+                <div class="meta">
+                  {% if item.host %}<span>Host: {{ item.host }}</span>{% endif %}
+                  {% if item.service %}<span>Service: {{ item.service }}</span>{% endif %}
+                  {% if item.tags %}<span>Tags: {{ ', '.join(item.tags) }}</span>{% endif %}
+                </div>
+              </article>
+            {% endfor %}
+          {% else %}
+            <p>No actions yet. Run the automation scripts to populate suggestions.</p>
+          {% endif %}
+        </div>
+      </section>
+    </main>
+
+    <script>
+      async function refresh() {
+        try {
+          const response = await fetch('/api/next-steps');
+          if (!response.ok) {
+            return;
+          }
+          const data = await response.json();
+          const list = document.getElementById('steps-list');
+          const timestamp = document.querySelector('.timestamp');
+          timestamp.textContent = `Last update: ${data.generated || 'waiting for data'}`;
+          if (!data.items || !data.items.length) {
+            list.innerHTML = '<p>No actions yet. Run the automation scripts to populate suggestions.</p>';
+            return;
+          }
+          list.innerHTML = data.items.map((item) => {
+            const meta = [];
+            if (item.host) meta.push(`Host: ${item.host}`);
+            if (item.service) meta.push(`Service: ${item.service}`);
+            if (item.tags && item.tags.length) meta.push(`Tags: ${item.tags.join(', ')}`);
+            const metaHtml = meta.length ? `<div class="meta">${meta.map((value) => `<span>${value}</span>`).join('')}</div>` : '';
+            const commandHtml = item.command ? `<pre><code>${item.command}</code></pre>` : '';
+            return `
+              <article class="card priority-${item.priority}">
+                <div class="card-header">
+                  <span class="priority">P${item.priority}</span>
+                  <h3>${item.title}</h3>
+                </div>
+                <p>${item.details}</p>
+                ${commandHtml}
+                ${metaHtml}
+              </article>
+            `;
+          }).join('');
+        } catch (error) {
+          console.error('refresh failed', error);
+        }
+      }
+      setInterval(refresh, 60000);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,91 @@
+:root {
+  --bg: #0d1117;
+  --card-bg: #161b22;
+  --text: #e6edf3;
+  --accent: #58a6ff;
+  --priority-1: #ff6b6b;
+  --priority-2: #f3a712;
+  --priority-3: #7dd87d;
+  --priority-4: #8ecae6;
+  --priority-5: #adb5bd;
+}
+
+body {
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: 2rem;
+}
+
+.container {
+  max-width: 960px;
+  margin: auto;
+}
+
+header {
+  margin-bottom: 2rem;
+}
+
+h1 {
+  margin: 0 0 0.25rem 0;
+}
+
+.timestamp {
+  color: #9ba1b0;
+  font-size: 0.9rem;
+}
+
+section h2 {
+  margin-bottom: 1rem;
+}
+
+.card {
+  background: var(--card-bg);
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.card-header h3 {
+  margin: 0;
+}
+
+.priority {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: var(--accent);
+  font-weight: bold;
+}
+
+.priority-1 .priority { background: var(--priority-1); }
+.priority-2 .priority { background: var(--priority-2); }
+.priority-3 .priority { background: var(--priority-3); }
+.priority-4 .priority { background: var(--priority-4); }
+.priority-5 .priority { background: var(--priority-5); }
+
+pre {
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.75rem;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: #9ba1b0;
+}
