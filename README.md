@@ -1,211 +1,298 @@
-# Flagcaddy
+# FlagCaddy
 
-Flagcaddy is a terminal-aware assistant that records the commands you run
-during CTFs or pentests and keeps a running list of the next steps you should
-try. It can:
+**AI-Powered Background Coach for Pentesters and CTF Competitors**
 
-- wrap any shell or tool in a PTY and capture both stdin and stdout streams,
-- deduplicate noisy commands and score each event for novelty,
-- store extracted facts (hosts, services, interesting strings) in SQLite,
-- fire quick rule-based recommendations immediately, and
-- optionally batch recent events into a `codex exec` prompt for LLM-backed
--  guidance without burning tokens on every keystroke,
-- review everything in a browser via the built-in FastAPI web UI.
+FlagCaddy is a passive monitoring tool that watches your terminal activity during penetration testing and CTF competitions, automatically cataloging your work and providing AI-powered recommendations for next steps.
 
-> The project name is a nod to golf caddies: keep working in your usual shell
-> while Flagcaddy quietly tracks progress and whispers suggestions.
+## Features
 
----
+- **Passive Terminal Monitoring**: Captures commands, working directories, and results without interfering with your workflow
+- **Intelligent Entity Extraction**: Automatically identifies and organizes:
+  - Hosts (IPs and domains)
+  - Open ports and services
+  - Network ranges
+  - Discovered vulnerabilities
+  - Web paths and endpoints
+- **AI-Powered Analysis**: Uses LLM (via `codex exec`) to:
+  - Summarize your progress
+  - Identify gaps in reconnaissance
+  - Suggest specific next steps
+  - Prioritize targets
+- **Live Web Dashboard**: Real-time UI showing:
+  - Overall recommendations
+  - Organized notes by host/network/service
+  - Granular recommendations for each discovered entity
+  - Recent command history
+- **Smart Organization**: Automatically categorizes work by entity type with context-aware recommendations
 
 ## Installation
 
-Flagcaddy targets Python 3.10+.
-
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+# Clone or navigate to the flagcaddy directory
+cd /home/kali/flagcaddy
+
+# Install in development mode
 pip install -e .
 ```
 
-The CLI entrypoint is `flagcaddy`.
+## Quick Start
 
----
-
-## Quick start
-
-Wrap the shell you plan to use for an engagement:
+### 1. Start FlagCaddy
 
 ```bash
-flagcaddy wrap hackthebox -- /bin/zsh
+source venv/bin/activate  # Activate virtual environment
+flagcaddy start
 ```
 
-- `hackthebox` becomes the session identifier (recommendations are grouped per
-  session).
-- Everything you type passes through your usual shell; Flagcaddy simply records
-  command + output pairs on the side.
-- The prompt is temporarily prefixed with `[flagcaddy]` so the recorder can
-  detect command boundaries.
+This will:
+- Start monitoring for captured commands
+- Begin analyzing your activity with AI
+- Launch the web UI accessible at http://YOUR_IP:5000 (binds to 0.0.0.0)
 
-After you exit the wrapped shell:
+### 2. Enable Shell Integration (in a new terminal)
+
+To capture command output, source the shell integration:
 
 ```bash
-flagcaddy sessions           # list known sessions
-flagcaddy events hackthebox  # show the most recent captured commands
-flagcaddy recommendations hackthebox  # show rule/LLM suggestions
-flagcaddy serve --host 127.0.0.1 --port 8765  # launch the browser UI
+source /home/kali/flagcaddy/flagcaddy/shell_integration.sh
 ```
 
-Each event stores:
-
-- canonical command text,
-- raw output (post-PTY capture),
-- novelty score (how unique/valuable Flagcaddy thinks the event is),
-- dedup flag (if we have already seen the same command/output fingerprint),
-- timestamp metadata.
-
----
-
-## Architecture overview
-
-1. **Capture (PTY wrapper)** – `flagcaddy wrap` launches a child command inside
-   a pseudoterminal. Stdin and stdout are mirrored back to your terminal while
-   a recorder tracks keystrokes, command boundaries, and prompt appearances.
-2. **Event store** – every command + output pair is normalized, hashed, and
-   inserted into `~/.flagcaddy/state.db` (SQLite). Canonicalized fingerprints
-   prevent re-processing duplicate events.
-3. **Fact extraction** – simple regex-based parsers save hosts, services,
-   credentials, and `tool` markers in a fact table. New facts bump the novelty
-   score for current events.
-4. **Recommendation engine** – rule packs (`flagcaddy.rules.DEFAULT_RULES`)
-   fire instantly (HTTP enumeration, SMB follow-ups, shell stabilization, etc.).
-   Events whose novelty exceeds a threshold enter the LLM dispatcher queue.
-5. **LLM dispatcher** – optionally shells out to `codex exec`, batching the most
-   recent high-signal events into a single prompt. Cooldown timers and novelty
-   thresholds ensure only meaningful changes trigger token usage.
-6. **Web UI** – `flagcaddy serve` exposes a FastAPI backend plus a lightweight
-   browser frontend to browse sessions and their recommendations from any device
-   on your network.
-
----
-
-## Configuring LLM dispatches
-
-Flagcaddy writes `~/.flagcaddy/config.toml` on first run. Edit the `[llm]`
-section to wire up the `codex exec` invocation you want:
-
-```toml
-[llm]
-command = "codex exec --model gpt-4o-mini"
-novelty_threshold = 1.5    # minimum novelty needed before batching events
-cooldown_seconds = 120     # per-session delay between codex calls
-batch_size = 5             # how many recent events to include
-max_chars = 6000           # prompt truncation guardrail
+**Optional**: Enable auto-capture for common pentest tools:
+```bash
+flagcaddy_auto_capture
 ```
 
-Flagcaddy sends prompts via stdin; `codex exec` should print the model response
-to stdout. If no `command` is configured (or the binary is missing), LLM
-recommendations stay disabled and the CLI will show a reminder.
+### 3. Run Commands with the `fc` Wrapper
 
-**Batching logic:** Whenever an event lands with `novelty >= novelty_threshold`
-and the cooldown has elapsed since the last LLM call for that session, the
-dispatcher concatenates up to `batch_size` recent events (`Command`, `Output`,
-`Novelty`) up to `max_chars`, appends clear instructions, and feeds the prompt
-to `codex exec`. The returned text is stored as a recommendation so you can
-review it later with `flagcaddy recommendations <session>`.
-
----
-
-## Deduplication & novelty scoring
-
-Flagcaddy tries to keep the LLM budget focused on genuinely new information:
-
-- **Fingerprints** – command text + canonicalized output (IPs masked, large
-  numbers replaced, whitespace collapsed) hashed via SHA-1. If an event's
-  fingerprint already exists in the session, it is marked as a duplicate and
-  given a low novelty score.
-- **Fact hits** – regex-based extraction saves hosts, `proto/port:service`
-  strings, credentials, `flag{}` tokens, and tool families. Newly discovered
-  facts add +0.6 each to the novelty score.
-- **Signal keywords** – terms like `shell`, `password`, `flag{` add small bumps.
-- **Decay guardrails** – novelty is clamped between 0.15 and 5.0.
-
-This scoring feeds both rule prioritization and the LLM dispatcher.
-
----
-
-## Rule-based recommendations
-
-`flagcaddy.rules.DEFAULT_RULES` ships with a few evergreen heuristics:
-
-| Rule             | Trigger                                    | Example suggestion |
-| ---------------- | ------------------------------------------ | ------------------ |
-| `http-enum`      | HTTP ports spotted in output               | Run feroxbuster, screenshot sites |
-| `smb-enum`       | SMB services listed                        | Use `smbclient`, `enum4linux`, check signing |
-| `ftp-enum`       | FTP banner / login hints                   | Try anonymous login, brute creds |
-| `shell-checklist`| Reverse shells or `nc` usage in commands   | Stabilize shell, run linpeas/WinPEAS |
-
-You can create new rules by adding to the `DEFAULT_RULES` list – each rule is a
-callable that receives the `EventContext` (command, output, extracted facts,
-novelty) and returns an optional `Recommendation`.
-
----
-
-## Usage patterns
-
-### Wrap a single tool
+Use `fc` (FlagCaddy) to run and capture commands with their output:
 
 ```bash
-flagcaddy wrap bloodhound -- neo4j console
+fc nmap -sV 10.10.10.5
+fc gobuster dir -u http://target.com -w /usr/share/wordlists/dirb/common.txt
+fc sqlmap -u "http://target.com/page?id=1" --batch
 ```
 
-This is helpful when a single utility prints lots of context (e.g., `nmap`,
-`linpeas`). Flagcaddy will record that tool's output, produce service facts, and
-maybe call `codex exec` when new hosts/ports appear.
+Or if you enabled auto-capture, just run commands normally:
+```bash
+nmap -sV 10.10.10.5  # Automatically captured
+```
 
-### Wrap a login shell
+**See [SHELL_INTEGRATION.md](SHELL_INTEGRATION.md) for detailed usage**
 
-For everyday workflows, start a new shell per target:
+### 4. View Recommendations
+
+Open the web UI in your browser (http://localhost:5000 locally, or http://YOUR_IP:5000 from another machine) to see:
+- Overall strategy recommendations based on all activity
+- Discovered targets with specific next steps for each
+- Recent command history with output
+
+**Note**: The AI analysis only runs when there are new commands to analyze, saving your LLM quota.
+
+## CLI Commands
 
 ```bash
-flagcaddy wrap academy -- /bin/bash --noprofile --norc
+# Start the background monitor and web UI
+flagcaddy start
+
+# Start with custom intervals
+flagcaddy start --capture-interval 5 --analysis-interval 60
+
+# Start without web UI (monitoring only)
+flagcaddy start --no-web
+
+# View current status and statistics
+flagcaddy status
+
+# List discovered entities
+flagcaddy entities
+flagcaddy entities --type host
+flagcaddy entities --type port
+
+# List recent commands
+flagcaddy commands --limit 50
+
+# Run analysis once (useful for testing)
+flagcaddy analyze
+
+# Start only the web UI (if monitoring is already running)
+flagcaddy web
+
+# Show configuration
+flagcaddy info
+
+# Clean up false positive entities (files, git config, etc.)
+flagcaddy cleanup
+
+# Reset all data
+flagcaddy reset
 ```
 
-Every command executed in that shell is recorded; when you're done the session
-remains queryable even after closing the terminal.
+## Configuration
 
-### Viewing recommendations during an engagement
-
-- **Browser UI:** `flagcaddy serve --host 127.0.0.1 --port 8765` launches a FastAPI app
-  that lists sessions and renders their latest recommendations (auto-refreshing
-  every 30 seconds). Point your browser to the printed URL.
-- **CLI polling:** run a second terminal with e.g.
-  `watch -n 20 '/home/kali/flagcaddy/.venv/bin/flagcaddy recommendations academy -n 5'`
-  if you prefer text-only monitoring.
-
----
-
-## Development
-
-The repository is intentionally simple:
-
-- `flagcaddy/capture.py` handles PTY work and command segmentation.
-- `flagcaddy/analysis.py` has canonicalization + fact extraction helpers.
-- `flagcaddy/engine.py` ties events, rules, and LLM dispatches together.
-- `flagcaddy/rules.py` defines rule-based heuristics.
-
-Run linting and tests (add more as the project grows):
+FlagCaddy uses environment variables for configuration:
 
 ```bash
-python -m compileall flagcaddy
+# Custom codex exec path
+export FLAGCADDY_CODEX_EXEC="codex"
+
+# Web UI configuration
+export FLAGCADDY_HOST="0.0.0.0"  # Default: binds to all interfaces (network accessible)
+export FLAGCADDY_PORT="5000"
+
+# Analysis interval (seconds)
+export FLAGCADDY_ANALYSIS_INTERVAL="30"
 ```
 
----
+### Network Access
 
-## Roadmap ideas
+By default, FlagCaddy binds to `0.0.0.0:5000`, making the web UI accessible from other machines on your network. This is useful for:
+- Viewing the dashboard from your laptop while running commands on a remote server
+- Team collaboration during CTF competitions
+- Accessing from mobile devices on the same network
 
-- pluggable fact extractors for tool-specific JSON outputs (e.g., `nmap -oX`)
-- optional REST API / TUI dashboard
-- multi-user session syncing (e.g., team events)
-- scheduler that replays historical transcripts into different rule packs
+**Security Considerations:**
+- The web UI contains sensitive pentesting data (commands, discovered hosts, vulnerabilities)
+- No authentication is implemented by default
+- **Only run on trusted networks** (VPN, isolated lab environment, localhost)
+- To restrict to localhost only: `export FLAGCADDY_HOST="127.0.0.1"`
+- Consider using SSH tunneling for remote access: `ssh -L 5000:localhost:5000 user@remote-host`
 
-PRs and suggestions welcome!
+Access the UI:
+- **Locally**: http://localhost:5000
+- **From network**: http://YOUR_IP_ADDRESS:5000
+- Find your IP: `ip addr show` or `hostname -I`
+
+## How It Works
+
+### 1. Command Capture (Shell Integration)
+
+You run commands using the `fc` wrapper (or enable auto-capture). This captures:
+- Command text
+- Working directory
+- **Full command output** (stdout + stderr)
+- Exit code
+- Timestamp
+
+Commands are logged to `~/.flagcaddy/commands.jsonl` in JSONL format.
+
+### 2. Entity Extraction
+
+As commands are captured, FlagCaddy automatically extracts relevant entities from command output:
+- **Hosts**: IP addresses and domain names
+- **Ports**: Discovered open ports with services
+- **Networks**: CIDR ranges
+- **Services**: Identified services with versions
+- **Vulnerabilities**: Potential security issues
+- **Web Paths**: Discovered URLs and endpoints
+
+### 3. AI Analysis (with Change Detection)
+
+Periodically (default: every 30 seconds), FlagCaddy checks for changes:
+
+**Change Detection**:
+- Only runs LLM analysis when new commands have been captured
+- Tracks which entities have new activity
+- Saves LLM quota by skipping unnecessary analysis
+
+**Global Analysis**: When changes detected, analyzes all recent activity:
+- Summary of what's been done
+- Overall strategy recommendations
+- Identified gaps in reconnaissance
+
+**Entity Analysis**: For entities with new activity:
+- Analyzes all related commands and output
+- Provides focused next steps
+- Assigns priority level
+
+### 4. Web Dashboard
+
+The live web UI shows:
+- **Overall Recommendations**: Top-level strategy based on all activity
+- **Discovered Targets**: Organized by type (hosts, ports, services, etc.)
+- **Entity-Specific Recommendations**: Granular next steps for each target
+- **Recent Commands**: Your command history with output
+
+Updates happen automatically every 5-10 seconds via WebSockets.
+
+## Tool Support
+
+FlagCaddy has built-in support for extracting data from:
+- nmap (port scans, service detection, OS detection)
+- gobuster (directory enumeration)
+- nikto (web scanning)
+- sqlmap (SQL injection testing)
+- And more...
+
+It also uses generic pattern matching to catch IPs, domains, ports, and networks from any tool's output.
+
+## Use Cases
+
+### Penetration Testing
+- Keep track of multiple targets across different networks
+- Get reminded about ports you haven't fully explored
+- See suggestions for privilege escalation or lateral movement
+
+### CTF Competitions
+- Organize flags, credentials, and findings
+- Get hints about unexplored attack vectors
+- Track progress across multiple challenges
+
+### Bug Bounty Hunting
+- Manage discoveries across multiple subdomains
+- Get recommendations for related endpoints
+- Track tested and untested attack surfaces
+
+## Architecture
+
+```
+flagcaddy/
+├── __init__.py        # Package initialization
+├── cli.py            # Command-line interface
+├── config.py         # Configuration management
+├── db.py             # SQLite database layer
+├── capture.py        # Terminal monitoring
+├── rules.py          # Entity extraction logic
+├── llm.py            # LLM integration via codex exec
+├── analysis.py       # Analysis coordination
+├── engine.py         # Main orchestration engine
+├── web.py            # Flask web server
+└── templates/
+    └── index.html    # Web dashboard UI
+```
+
+## Data Storage
+
+All data is stored in `~/.flagcaddy/`:
+- `flagcaddy.db`: SQLite database with commands, entities, and analysis
+- `terminal_capture.log`: Optional full terminal capture log
+
+## Privacy & Security
+
+- All data is stored locally in your home directory
+- No data is sent to external services except to your configured LLM via `codex exec`
+- Commands and output may contain sensitive information, so keep your `~/.flagcaddy/` directory secure
+
+## Requirements
+
+- Python 3.9+
+- `codex` CLI tool (for LLM analysis)
+- Flask, Flask-SocketIO (installed automatically)
+
+## Troubleshooting
+
+### "codex exec not found"
+Make sure the `codex` CLI is installed and in your PATH, or set `FLAGCADDY_CODEX_EXEC` to the correct path.
+
+### No commands being captured
+FlagCaddy monitors shell history files. Make sure you're using bash or zsh, and that history is being saved (check `HISTFILE` environment variable).
+
+### Web UI not loading
+Check that port 5000 is not in use by another application, or specify a different port with `--port`.
+
+## Contributing
+
+This is a tool for authorized security testing and CTF competitions only. Use responsibly and only on systems you have permission to test.
+
+## License
+
+MIT

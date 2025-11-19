@@ -1,2 +1,2 @@
 [console_scripts]
-flagcaddy = flagcaddy.cli:app
+flagcaddy = flagcaddy.cli:main

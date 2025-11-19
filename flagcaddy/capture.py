@@ -1,198 +1,152 @@
-from __future__ import annotations
+"""Terminal capture for monitoring user commands and output."""
 
-import fcntl
 import os
-import pty
-import select
-import signal
-import struct
-import sys
-import termios
-import tty
-from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+import json
+import time
+from pathlib import Path
+from typing import Optional, Callable
+from datetime import datetime
 
-from .analysis import PROMPT_SENTINEL
-from .db import Database, utcnow
-from .engine import RecommendationEngine
+from .config import FLAGCADDY_DIR
 
 
-def _set_nonblocking(fd: int) -> None:
-    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+# JSONL log file from shell integration
+JSONL_LOG = FLAGCADDY_DIR / "commands.jsonl"
 
 
-def _winsize() -> bytes:
-    try:
-        packed = fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
-        return packed
-    except Exception:
-        return struct.pack("HHHH", 40, 160, 0, 0)
+class TerminalCapture:
+    """Captures terminal commands and output by monitoring JSONL log file from shell integration."""
 
+    def __init__(self, callback: Optional[Callable] = None, log_file: Path = JSONL_LOG):
+        """
+        Initialize terminal capture.
 
-@dataclass
-class RecorderState:
-    current_command: Optional[str] = None
-    current_input: Optional[str] = None
-    started_at: Optional[str] = None
-    buffer: List[str] = field(default_factory=list)
+        Args:
+            callback: Function to call with (command, working_dir, output, session_id) when a new command is detected
+            log_file: Path to JSONL log file to monitor
+        """
+        self.callback = callback
+        self.log_file = log_file
+        self.last_position = 0
 
+        # Create log file if it doesn't exist
+        self.log_file.touch()
 
-class SessionRecorder:
-    def __init__(self, engine: RecommendationEngine, session_id: int):
-        self.engine = engine
-        self.session_id = session_id
-        self.state = RecorderState()
-        self.command_buffer = ""
-        self.prompt_window = ""
+        # Initialize position to end of file (don't reprocess old commands on startup)
+        if self.log_file.exists():
+            with open(self.log_file, 'r') as f:
+                f.seek(0, 2)  # Seek to end
+                self.last_position = f.tell()
 
-    def handle_input(self, data: bytes) -> None:
-        text = data.decode("utf-8", errors="ignore")
-        for ch in text:
-            if ch == "\x7f":  # backspace
-                self.command_buffer = self.command_buffer[:-1]
-            elif ch in ("\r", "\n"):
-                self._handle_enter()
-            elif ch == "\x03":  # Ctrl+C resets
-                self._reset_command()
-            else:
-                self.command_buffer += ch
+        self.session_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    def _reset_command(self) -> None:
-        self.command_buffer = ""
+    def monitor_jsonl_log(self) -> list:
+        """
+        Monitor the JSONL log file for new entries.
 
-    def _handle_enter(self) -> None:
-        line = self.command_buffer.strip()
-        self.command_buffer = ""
-        if not line:
-            return
-        self.state.current_command = line
-        self.state.current_input = line
-        self.state.started_at = utcnow()
-        self.state.buffer = []
+        Returns:
+            List of new command dictionaries
+        """
+        if not self.log_file.exists():
+            return []
 
-    def handle_output(self, data: bytes) -> None:
-        text = data.decode("utf-8", errors="ignore")
-        if self.state.current_command:
-            self.state.buffer.append(text)
-        self.prompt_window += text
-        if PROMPT_SENTINEL in self.prompt_window:
-            if self.state.current_command:
-                self._finalize_event()
-            self.prompt_window = ""
-        elif len(self.prompt_window) > len(PROMPT_SENTINEL) * 4:
-            self.prompt_window = self.prompt_window[-len(PROMPT_SENTINEL) * 4 :]
+        new_commands = []
 
-    def flush(self) -> None:
-        self._finalize_event(force=True)
-
-    def _finalize_event(self, force: bool = False) -> None:
-        if not self.state.current_command:
-            return
-        output_text = "".join(self.state.buffer or [])
-        if not output_text and not force:
-            return
-        self.engine.process_event(
-            self.session_id,
-            command=self.state.current_command,
-            raw_input=self.state.current_input or self.state.current_command,
-            raw_output=output_text,
-            started_at=self.state.started_at,
-            finished_at=utcnow(),
-        )
-        self.state = RecorderState()
-
-
-class PtySession:
-    def __init__(
-        self,
-        session_name: str,
-        command: Sequence[str],
-        db: Database,
-        engine: RecommendationEngine,
-    ):
-        self.session_name = session_name
-        self.command = list(command)
-        self.db = db
-        self.engine = engine
-        self.session_id = self.db.ensure_session(session_name)
-        self.recorder = SessionRecorder(engine, self.session_id)
-        self.child_pid: Optional[int] = None
-        self.master_fd: Optional[int] = None
-        self._orig_tty = None
-
-    def start(self) -> int:
-        pid, master_fd = pty.fork()
-        if pid == 0:
-            self._exec_child()
-        self.child_pid = pid
-        self.master_fd = master_fd
-        self._setup_terminal()
-        self._loop()
-        return os.waitpid(self.child_pid, 0)[1]
-
-    def _exec_child(self) -> None:  # pragma: no cover - child process
-        env = os.environ.copy()
-        prompt = f"{PROMPT_SENTINEL} \\u@\\h:\\w\\$ "
-        env["PS1"] = prompt
-        env["PROMPT"] = prompt
-        env["PROMPT_COMMAND"] = ""
-        env["FLAGCADDY_SESSION"] = self.session_name
         try:
-            os.execvpe(self.command[0], self.command, env)
-        except FileNotFoundError:
-            print(f"Unable to exec {self.command[0]}", file=sys.stderr)
-            os._exit(1)
+            with open(self.log_file, 'r') as f:
+                # Seek to last position
+                f.seek(self.last_position)
 
-    def _setup_terminal(self) -> None:
-        assert self.master_fd is not None
-        self._orig_tty = termios.tcgetattr(sys.stdin.fileno())
-        tty.setraw(sys.stdin.fileno())
-        _set_nonblocking(self.master_fd)
-        _set_nonblocking(sys.stdin.fileno())
-        signal.signal(signal.SIGWINCH, self._resize_pty)
-        self._resize_pty()
+                # Read new lines
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
 
-    def _restore_terminal(self) -> None:
-        if self._orig_tty:
-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._orig_tty)
-        signal.signal(signal.SIGWINCH, signal.SIG_DFL)
-
-    def _resize_pty(self, *_args) -> None:
-        if self.master_fd is None:
-            return
-        try:
-            winsize = _winsize()
-            fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
-        except Exception:
-            pass
-
-    def _loop(self) -> None:
-        assert self.master_fd is not None
-        try:
-            while True:
-                rlist, _, _ = select.select(
-                    [self.master_fd, sys.stdin.fileno()],
-                    [],
-                    [],
-                )
-                if sys.stdin.fileno() in rlist:
-                    data = os.read(sys.stdin.fileno(), 1024)
-                    if data:
-                        os.write(self.master_fd, data)
-                        self.recorder.handle_input(data)
-                if self.master_fd in rlist:
                     try:
-                        data = os.read(self.master_fd, 1024)
-                    except OSError:
-                        break
-                    if not data:
-                        break
-                    os.write(sys.stdout.fileno(), data)
-                    self.recorder.handle_output(data)
-        finally:
-            self.recorder.flush()
-            self._restore_terminal()
+                        # Parse JSON line
+                        cmd_data = json.loads(line)
+                        new_commands.append(cmd_data)
+                    except json.JSONDecodeError as e:
+                        print(f"[FlagCaddy] Error parsing JSON line: {e}")
+                        continue
 
+                # Update position
+                self.last_position = f.tell()
 
-__all__ = ["PtySession"]
+        except Exception as e:
+            print(f"[FlagCaddy] Error reading log file: {e}")
+
+        return new_commands
+
+    def get_command_count(self) -> int:
+        """Get total number of commands in log file."""
+        if not self.log_file.exists():
+            return 0
+
+        try:
+            with open(self.log_file, 'r') as f:
+                return sum(1 for line in f if line.strip())
+        except Exception:
+            return 0
+
+    def monitor_loop(self, interval: int = 2):
+        """
+        Main monitoring loop that checks for new commands periodically.
+
+        Args:
+            interval: Seconds between checks
+        """
+        print(f"[FlagCaddy] Starting terminal monitoring")
+        print(f"[FlagCaddy] Monitoring: {self.log_file}")
+        print()
+        print("[FlagCaddy] To capture commands with output, source the shell integration:")
+
+        # Try to find shell_integration.sh
+        integration_paths = [
+            Path(__file__).parent / "shell_integration.sh",
+            FLAGCADDY_DIR.parent / "flagcaddy" / "flagcaddy" / "shell_integration.sh",
+        ]
+
+        integration_file = None
+        for path in integration_paths:
+            if path.exists():
+                integration_file = path
+                break
+
+        if integration_file:
+            print(f"[FlagCaddy]   source {integration_file}")
+        else:
+            print(f"[FlagCaddy]   source <path-to>/flagcaddy/shell_integration.sh")
+
+        print("[FlagCaddy]   Then use: fc <command>")
+        print("[FlagCaddy]   Example: fc nmap -sV 10.10.10.5")
+        print()
+
+        command_count = self.get_command_count()
+        if command_count > 0:
+            print(f"[FlagCaddy] Found {command_count} existing commands in log")
+
+        while True:
+            try:
+                # Check for new commands in JSONL log
+                new_commands = self.monitor_jsonl_log()
+
+                # Process each new command
+                for cmd_data in new_commands:
+                    if self.callback:
+                        self.callback(
+                            cmd_data.get('command', ''),
+                            cmd_data.get('working_dir', ''),
+                            cmd_data.get('output', ''),
+                            cmd_data.get('session_id', self.session_id)
+                        )
+
+                time.sleep(interval)
+
+            except KeyboardInterrupt:
+                print("\n[FlagCaddy] Monitoring stopped")
+                break
+            except Exception as e:
+                print(f"[FlagCaddy] Error in monitoring loop: {e}")
+                time.sleep(interval)

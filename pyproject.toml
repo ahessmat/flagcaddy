@@ -1,23 +1,21 @@
-[build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "flagcaddy"
 version = "0.1.0"
-description = "Terminal-aware recommendation engine for CTF and pentest workflows"
-readme = "README.md"
-requires-python = ">=3.10"
-license = {file = "LICENSE"}
+description = "Background AI coach for pentesters and CTF competitors"
+requires-python = ">=3.9"
 dependencies = [
-    "typer>=0.9",
-    "rich>=13.7",
-    "fastapi>=0.111",
-    "uvicorn>=0.30",
+    "flask>=3.0.0",
+    "flask-socketio>=5.3.0",
+    "python-socketio>=5.10.0",
+    "click>=8.1.0",
+    "watchdog>=3.0.0",
+    "pexpect>=4.9.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.scripts]
-flagcaddy = "flagcaddy.cli:app"
+flagcaddy = "flagcaddy.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

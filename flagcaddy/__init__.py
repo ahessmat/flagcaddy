@@ -1,12 +1,3 @@
-"""
-flagcaddy package
+"""FlagCaddy - AI-powered background coach for pentesters and CTF competitors."""
 
-Provides tooling to wrap terminal sessions, capture command/output pairs,
-and generate next-step recommendations backed by heuristics and optional
-LLM calls via `codex exec`.
-"""
-
-__all__ = [
-    "config",
-]
-
+__version__ = "0.1.0"

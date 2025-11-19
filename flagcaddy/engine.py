@@ -1,152 +1,107 @@
-from __future__ import annotations
+"""Main FlagCaddy engine that coordinates all components."""
 
-import datetime as dt
-from typing import List, Optional
+import threading
+import time
+from typing import Optional
 
-from .analysis import (
-    Fact,
-    estimate_novelty,
-    extract_facts,
-    fingerprint,
-    signal_boost_from_text,
-)
-from .config import AppConfig
-from .db import Database, utcnow
-from .llm import CodexExecClient
-from .rules import DEFAULT_RULES, EventContext, Recommendation, Rule
+from .db import Database
+from .capture import TerminalCapture
+from .analysis import AnalysisEngine
+from .config import ANALYSIS_INTERVAL
 
 
-class RecommendationEngine:
-    def __init__(
-        self,
-        db: Database,
-        config: AppConfig,
-        llm_client: Optional[CodexExecClient] = None,
-    ):
-        self.db = db
-        self.config = config
-        self.llm = llm_client or CodexExecClient(config.llm_command)
-        self.rules: List[Rule] = DEFAULT_RULES
+class FlagCaddyEngine:
+    """Main engine that coordinates terminal capture, analysis, and UI updates."""
 
-    def process_event(
-        self,
-        session_id: int,
-        *,
-        command: str,
-        raw_input: str,
-        raw_output: str,
-        started_at: Optional[str],
-        finished_at: Optional[str],
-    ) -> int:
-        fp = fingerprint(command, raw_output)
-        existing = self.db.find_event_by_fingerprint(session_id, fp)
-        duplicate = existing is not None
-        facts = extract_facts(command, raw_output)
-        new_fact_hits = 0
-        for fact in facts:
-            if self.db.add_fact(session_id, fact.fact_type, fact.value):
-                new_fact_hits += 1
-        novelty = estimate_novelty(
-            duplicate=duplicate,
-            new_fact_hits=new_fact_hits,
-            signal_boost=signal_boost_from_text(command, raw_output),
+    def __init__(self):
+        self.db = Database()
+        self.analysis_engine = AnalysisEngine(self.db)
+        self.capture = None
+        self.threads = []
+        self.running = False
+
+    def on_command_captured(self, command: str, working_dir: str, output: str, session_id: str):
+        """
+        Callback for when a new command is captured.
+
+        Args:
+            command: The command that was executed
+            working_dir: Working directory
+            output: Command output
+            session_id: Session identifier
+        """
+        self.analysis_engine.process_command(command, working_dir, output, session_id)
+
+    def start(self, capture_interval: int = 2, analysis_interval: int = ANALYSIS_INTERVAL):
+        """
+        Start the FlagCaddy engine.
+
+        Args:
+            capture_interval: Seconds between terminal capture checks
+            analysis_interval: Seconds between analysis runs
+        """
+        if self.running:
+            print("[FlagCaddy] Already running")
+            return
+
+        self.running = True
+        print("[FlagCaddy] Starting FlagCaddy engine...")
+
+        # Initialize terminal capture
+        self.capture = TerminalCapture(callback=self.on_command_captured)
+
+        # Update analysis interval
+        self.analysis_engine.analysis_interval = analysis_interval
+
+        # Start capture thread
+        capture_thread = threading.Thread(
+            target=self.capture.monitor_loop,
+            args=(capture_interval,),
+            daemon=True
         )
-        event_id = self.db.insert_event(
-            session_id,
-            command=command,
-            raw_input=raw_input,
-            raw_output=raw_output,
-            fingerprint=fp,
-            novelty=novelty,
-            duplicate=duplicate,
-            started_at=started_at,
-            finished_at=finished_at,
+        capture_thread.start()
+        self.threads.append(capture_thread)
+
+        print("[FlagCaddy] Terminal monitoring started")
+
+        # Start analysis thread
+        analysis_thread = threading.Thread(
+            target=self.analysis_engine.analysis_loop,
+            daemon=True
         )
-        ctx = EventContext(
-            command=command,
-            output=raw_output,
-            facts=facts,
-            novelty=novelty,
-        )
-        for rule in self.rules:
-            rec = rule.apply(ctx)
-            if rec:
-                self._persist_recommendation(session_id, rec, event_id, source="rule")
+        analysis_thread.start()
+        self.threads.append(analysis_thread)
 
-        if self._should_trigger_llm(session_id, novelty, duplicate):
-            prompt = self._build_prompt(session_id)
-            if prompt:
-                llm_text = self.llm.run(prompt)
-                self._persist_recommendation(
-                    session_id,
-                    Recommendation(
-                        title="LLM recommendations",
-                        body=llm_text,
-                    ),
-                    event_id,
-                    source="llm",
-                )
-        return event_id
+        print("[FlagCaddy] Analysis engine started")
+        print(f"[FlagCaddy] Web UI will be available at http://localhost:5000")
+        print("[FlagCaddy] All systems running. Press Ctrl+C to stop.")
 
-    def _persist_recommendation(
-        self,
-        session_id: int,
-        recommendation: Recommendation,
-        event_id: int,
-        source: str,
-    ) -> None:
-        self.db.add_recommendation(
-            session_id,
-            source=source,
-            title=recommendation.title,
-            body=recommendation.body,
-            event_ids=[event_id],
-        )
+    def stop(self):
+        """Stop the FlagCaddy engine."""
+        print("\n[FlagCaddy] Stopping FlagCaddy engine...")
+        self.running = False
 
-    def _should_trigger_llm(self, session_id: int, novelty: float, duplicate: bool) -> bool:
-        if not self.llm.enabled:
-            return False
-        if duplicate:
-            return False
-        if novelty < self.config.novelty_threshold:
-            return False
-        last = self.db.last_llm_timestamp(session_id)
-        if not last:
-            return True
-        last_dt = dt.datetime.fromisoformat(last)
-        now_dt = dt.datetime.fromisoformat(utcnow())
-        delta = (now_dt - last_dt).total_seconds()
-        return delta >= self.config.llm_cooldown_seconds
+        # Threads are daemon threads, so they'll stop when main thread exits
 
-    def _build_prompt(self, session_id: int) -> str:
-        rows = list(
-            reversed(self.db.recent_events(session_id, limit=self.config.llm_batch_size * 2))
-        )
-        if not rows:
-            return ""
-        buffer: List[str] = []
-        total_chars = 0
-        for row in rows:
-            entry = (
-                f"Command: {row['command']}\n"
-                f"Output:\n{row['raw_output']}\n"
-                f"Novelty: {row['novelty']}\n"
-                "----\n"
-            )
-            total_chars += len(entry)
-            if total_chars > self.config.llm_max_chars:
-                break
-            buffer.append(entry)
-            if len(buffer) >= self.config.llm_batch_size:
-                break
-        instructions = (
-            "You are a CTF and pentest assistant. Given the transcript chunks above, "
-            "summarize the key findings and list 3 concrete next steps. Focus on actionable "
-            "enumeration or exploitation guidance."
-        )
-        payload = "\n".join(buffer) + "\n" + instructions
-        return payload
+    def run_analysis_once(self):
+        """Run analysis once and exit (useful for testing)."""
+        print("[FlagCaddy] Running one-time analysis...")
+        self.analysis_engine.run_global_analysis()
+        self.analysis_engine.run_entity_analysis()
+        print("[FlagCaddy] Analysis complete")
 
+    def get_status(self) -> dict:
+        """Get current status of the engine."""
+        recent_commands = self.db.get_recent_commands(limit=10)
+        entities = self.db.get_all_entities()
+        global_analysis = self.db.get_analysis(scope='global', limit=1)
 
-__all__ = ["RecommendationEngine"]
+        entity_counts = {etype: len(elist) for etype, elist in entities.items()}
 
+        return {
+            "running": self.running,
+            "total_commands": len(self.db.get_recent_commands(limit=1000)),
+            "recent_commands": len(recent_commands),
+            "entities": entity_counts,
+            "latest_analysis": global_analysis[0] if global_analysis else None
+        }
