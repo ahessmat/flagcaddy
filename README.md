@@ -9,7 +9,8 @@ try. It can:
 - store extracted facts (hosts, services, interesting strings) in SQLite,
 - fire quick rule-based recommendations immediately, and
 - optionally batch recent events into a `codex exec` prompt for LLM-backed
-  guidance without burning tokens on every keystroke.
+-  guidance without burning tokens on every keystroke,
+- review everything in a browser via the built-in FastAPI web UI.
 
 > The project name is a nod to golf caddies: keep working in your usual shell
 > while Flagcaddy quietly tracks progress and whispers suggestions.
@@ -51,6 +52,7 @@ After you exit the wrapped shell:
 flagcaddy sessions           # list known sessions
 flagcaddy events hackthebox  # show the most recent captured commands
 flagcaddy recommendations hackthebox  # show rule/LLM suggestions
+flagcaddy serve --host 127.0.0.1 --port 8765  # launch the browser UI
 ```
 
 Each event stores:
@@ -80,6 +82,9 @@ Each event stores:
 5. **LLM dispatcher** – optionally shells out to `codex exec`, batching the most
    recent high-signal events into a single prompt. Cooldown timers and novelty
    thresholds ensure only meaningful changes trigger token usage.
+6. **Web UI** – `flagcaddy serve` exposes a FastAPI backend plus a lightweight
+   browser frontend to browse sessions and their recommendations from any device
+   on your network.
 
 ---
 
@@ -170,13 +175,12 @@ remains queryable even after closing the terminal.
 
 ### Viewing recommendations during an engagement
 
-Run a second terminal with `watch`:
-
-```bash
-watch -n 20 'flagcaddy recommendations academy -n 5'
-```
-
-This gives you a near-live feed of advice without touching the wrapped shell.
+- **Browser UI:** `flagcaddy serve --host 127.0.0.1 --port 8765` launches a FastAPI app
+  that lists sessions and renders their latest recommendations (auto-refreshing
+  every 30 seconds). Point your browser to the printed URL.
+- **CLI polling:** run a second terminal with e.g.
+  `watch -n 20 '/home/kali/flagcaddy/.venv/bin/flagcaddy recommendations academy -n 5'`
+  if you prefer text-only monitoring.
 
 ---
 

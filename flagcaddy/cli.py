@@ -4,6 +4,7 @@ import os
 from typing import List, Optional
 
 import typer
+import uvicorn
 from rich.console import Console
 from rich.table import Table
 
@@ -12,6 +13,7 @@ from .config import AppConfig, load_config
 from .db import Database
 from .engine import RecommendationEngine
 from .llm import CodexExecClient
+from .web import create_app
 
 
 app = typer.Typer(help="Passive recommendation engine for CTF/pentest terminals.")
@@ -103,3 +105,19 @@ def show_recommendations(
     for row in rows:
         console.rule(f"{row['id']} · {row['title']}")
         console.print(row["body"])
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8765, "--port"),
+):
+    """
+    Launch a FastAPI-powered web UI for reviewing recommendations.
+    """
+    config, db, _ = bootstrap()
+    fastapi_app = create_app(config, db)
+    console.print(
+        f"[bold green]Serving[/] http://{host}:{port} (Ctrl+C to stop)"
+    )
+    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")

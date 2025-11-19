@@ -14,7 +14,7 @@ def utcnow() -> str:
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.conn = sqlite3.connect(path)
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
 
@@ -90,6 +90,7 @@ class Database:
         if existing:
             return existing
         now = utcnow()
+        cur = self.conn.cursor()
         cur.execute(
             "INSERT INTO sessions (name, created_at) VALUES (?, ?)",
             (name, now),
