@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flagcaddy"
+version = "0.1.0"
+description = "Terminal-aware recommendation engine for CTF and pentest workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+    "typer>=0.9",
+    "rich>=13.7",
+]
+
+[project.scripts]
+flagcaddy = "flagcaddy.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
