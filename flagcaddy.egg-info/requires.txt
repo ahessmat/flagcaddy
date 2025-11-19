@@ -1,2 +1,4 @@
 typer>=0.9
 rich>=13.7
+fastapi>=0.111
+uvicorn>=0.30

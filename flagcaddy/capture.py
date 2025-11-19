@@ -133,7 +133,9 @@ class PtySession:
 
     def _exec_child(self) -> None:  # pragma: no cover - child process
         env = os.environ.copy()
-        env.setdefault("PS1", f"{PROMPT_SENTINEL} \\u@\\h:\\w\\$ ")
+        prompt = f"{PROMPT_SENTINEL} \\u@\\h:\\w\\$ "
+        env["PS1"] = prompt
+        env["PROMPT"] = prompt
         env["PROMPT_COMMAND"] = ""
         env["FLAGCADDY_SESSION"] = self.session_name
         try:

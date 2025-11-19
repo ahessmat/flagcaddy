@@ -10,6 +10,7 @@ flagcaddy/db.py
 flagcaddy/engine.py
 flagcaddy/llm.py
 flagcaddy/rules.py
+flagcaddy/web.py
 flagcaddy.egg-info/PKG-INFO
 flagcaddy.egg-info/SOURCES.txt
 flagcaddy.egg-info/dependency_links.txt
